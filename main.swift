@@ -40,6 +40,7 @@ struct Reed { var ratio: Double; var level: Double }
 enum Register: String, CaseIterable, Identifiable {
     case musette = "Musette", klarinette = "Klarinette", bandoneon = "Bandoneon", master = "Master"
     var id: String { rawValue }
+    func title(_ lang: Lang) -> String { self == .klarinette ? tr(lang, "Klarinette", "Clarinet") : rawValue }
     var reeds: [Reed] {
         func cents(_ c: Double) -> Double { pow(2, c / 1200) }
         switch self {
@@ -197,8 +198,21 @@ final class Synth {
 
 // MARK: - Tastenbelegung
 
-let noteNames = ["C", "Cis", "D", "Dis", "E", "F", "Fis", "G", "Gis", "A", "B", "H"]
-func noteName(_ midi: Int) -> String { noteNames[((midi % 12) + 12) % 12] + "\(midi / 12 - 1)" }
+enum Lang: String, CaseIterable, Identifiable {
+    case de = "DE", en = "EN"
+    var id: String { rawValue }
+    static var initial: Lang {
+        if let saved = UserDefaults.standard.string(forKey: "lang"), let l = Lang(rawValue: saved) { return l }
+        return Locale.preferredLanguages.first?.hasPrefix("de") == true ? .de : .en
+    }
+}
+
+func tr(_ lang: Lang, _ de: String, _ en: String) -> String { lang == .de ? de : en }
+
+let noteNamesDE = ["C", "Cis", "D", "Dis", "E", "F", "Fis", "G", "Gis", "A", "B", "H"]
+let noteNamesEN = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "B♭", "B"]
+func pitchName(_ pc: Int, _ lang: Lang) -> String { (lang == .de ? noteNamesDE : noteNamesEN)[((pc % 12) + 12) % 12] }
+func noteName(_ midi: Int, _ lang: Lang) -> String { pitchName(midi, lang) + "\(midi / 12 - 1)" }
 
 struct PianoKey { let code: UInt16; let semitone: Int; let black: Bool; let center: Double }
 
@@ -217,7 +231,7 @@ let diatonicPush = [52, 55, 60, 64, 67, 72, 76, 79, 84, 88]
 let diatonicPull = [55, 59, 62, 65, 69, 71, 74, 77, 81, 83]
 
 struct ChordKey { let code: UInt16; let root: Int; let minor: Bool
-    var name: String { noteNames[root] + (minor ? "m" : "") }
+    func name(_ lang: Lang) -> String { pitchName(root, lang) + (minor ? "m" : "") }
 }
 
 let chordKeys: [ChordKey] = [
@@ -248,6 +262,9 @@ func keyLabel(_ code: UInt16) -> String {
 enum Mode: String, CaseIterable, Identifiable {
     case chromatisch = "Chromatisch", wechsel = "Wechseltönig"
     var id: String { rawValue }
+    func title(_ lang: Lang) -> String {
+        self == .chromatisch ? tr(lang, "Chromatisch", "Chromatic") : tr(lang, "Wechseltönig", "Push-Pull")
+    }
 }
 
 enum Bellows { case push, pull }
@@ -261,6 +278,7 @@ final class Accordion: ObservableObject {
     @Published var octave = 0
     @Published var register = Register.musette { didSet { synth.setRegister(register) } }
     @Published var mode = Mode.chromatisch { didSet { synth.allOff(); held.removeAll() } }
+    @Published var lang = Lang.initial { didSet { UserDefaults.standard.set(lang.rawValue, forKey: "lang") } }
 
     let sensor = LidSensor()
     let labels: [UInt16: String]
@@ -394,6 +412,7 @@ struct BellowsView: View {
     let angle: Double
     let pressure: Double
     let direction: Bellows
+    let lang: Lang
 
     var body: some View {
         Canvas { ctx, size in
@@ -431,7 +450,7 @@ struct BellowsView: View {
         }
         .shadow(color: .bellowsRed.opacity(pressure * 0.9), radius: 6 + 22 * pressure)
         .overlay(alignment: .top) {
-            Text(direction == .pull ? "←  ZUG  →" : "→  DRUCK  ←")
+            Text(direction == .pull ? "←  \(tr(lang, "ZUG", "PULL"))  →" : "→  \(tr(lang, "DRUCK", "PUSH"))  ←")
                 .font(.system(size: 13, weight: .heavy, design: .rounded))
                 .tracking(2)
                 .foregroundStyle(Color.ivory)
@@ -459,9 +478,10 @@ struct Stat: View {
 
 struct PressureMeter: View {
     let pressure: Double
+    let lang: Lang
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Luftdruck").font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.dim).textCase(.uppercase)
+            Text(tr(lang, "Luftdruck", "Air pressure")).font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.dim).textCase(.uppercase)
             GeometryReader { g in
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.black.opacity(0.5))
@@ -490,7 +510,7 @@ struct PianoView: View {
                     let on = acc.held.contains(k.code)
                     VStack(spacing: 3) {
                         Spacer()
-                        Text(noteName(60 + acc.octave * 12 + k.semitone)).font(.system(size: 10, weight: .medium)).foregroundStyle(.black.opacity(0.45))
+                        Text(noteName(60 + acc.octave * 12 + k.semitone, acc.lang)).font(.system(size: 10, weight: .medium)).foregroundStyle(.black.opacity(0.45))
                         Text(acc.labels[k.code] ?? "").font(.system(size: 16, weight: .bold, design: .rounded)).foregroundStyle(.black.opacity(0.8))
                     }
                     .padding(.bottom, 10)
@@ -521,8 +541,8 @@ struct ButtonRowView: View {
         HStack(spacing: 10) {
             ForEach(Array(diatonicCodes.enumerated()), id: \.element) { i, code in
                 let on = acc.held.contains(code)
-                let pushNote = noteName(diatonicPush[i] + acc.octave * 12)
-                let pullNote = noteName(diatonicPull[i] + acc.octave * 12)
+                let pushNote = noteName(diatonicPush[i] + acc.octave * 12, acc.lang)
+                let pullNote = noteName(diatonicPull[i] + acc.octave * 12, acc.lang)
                 VStack(spacing: 6) {
                     Text(acc.labels[code] ?? "").font(.system(size: 18, weight: .bold, design: .rounded)).foregroundStyle(.black.opacity(0.8))
                         .frame(width: 52, height: 52)
@@ -545,7 +565,7 @@ struct ChordRowView: View {
             ForEach(chordKeys, id: \.code) { c in
                 let on = acc.held.contains(c.code)
                 VStack(spacing: 2) {
-                    Text(c.name).font(.system(size: 15, weight: .bold, design: .rounded))
+                    Text(c.name(acc.lang)).font(.system(size: 15, weight: .bold, design: .rounded))
                     Text(acc.labels[c.code] ?? "").font(.system(size: 11, weight: .medium)).opacity(0.6)
                 }
                 .foregroundStyle(on ? Color.black : Color.ivory)
@@ -564,27 +584,35 @@ struct ContentView: View {
             HStack(alignment: .firstTextBaseline) {
                 Text("Klappkordeon").font(.system(size: 28, weight: .heavy, design: .rounded)).foregroundStyle(Color.ivory)
                 Spacer()
-                Text(acc.sensor.available ? "Deckelsensor aktiv" : "Kein Deckelsensor – Zwei-Finger-Scrollen ist der Balg")
+                Text(acc.sensor.available
+                     ? tr(acc.lang, "Deckelsensor aktiv", "Lid sensor active")
+                     : tr(acc.lang, "Kein Deckelsensor – Zwei-Finger-Scrollen ist der Balg", "No lid sensor – two-finger scrolling is the bellows"))
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(acc.sensor.available ? Color.brass : Color.bellowsRed)
+                Picker("Language", selection: $acc.lang) {
+                    ForEach(Lang.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 90)
             }
 
-            BellowsView(angle: acc.angle, pressure: acc.pressure, direction: acc.direction)
+            BellowsView(angle: acc.angle, pressure: acc.pressure, direction: acc.direction, lang: acc.lang)
                 .frame(height: 150)
 
             HStack(spacing: 12) {
-                Stat(title: "Deckelwinkel", value: "\(Int(acc.angle.rounded()))°")
-                Stat(title: "Balg-Tempo", value: "\(Int(acc.speed.rounded()))°/s")
-                PressureMeter(pressure: acc.pressure)
+                Stat(title: tr(acc.lang, "Deckelwinkel", "Lid angle"), value: "\(Int(acc.angle.rounded()))°")
+                Stat(title: tr(acc.lang, "Balg-Tempo", "Bellows speed"), value: "\(Int(acc.speed.rounded()))°/s")
+                PressureMeter(pressure: acc.pressure, lang: acc.lang)
             }
 
             HStack(spacing: 16) {
                 Picker("Register", selection: $acc.register) {
-                    ForEach(Register.allCases) { Text($0.rawValue).tag($0) }
+                    ForEach(Register.allCases) { Text($0.title(acc.lang)).tag($0) }
                 }
                 .pickerStyle(.segmented)
-                Picker("Spielart", selection: $acc.mode) {
-                    ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
+                Picker("Mode", selection: $acc.mode) {
+                    ForEach(Mode.allCases) { Text($0.title(acc.lang)).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 280)
@@ -593,21 +621,25 @@ struct ContentView: View {
 
             VStack(spacing: 6) {
                 HStack {
-                    Text("Diskant").font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.dim).textCase(.uppercase)
+                    Text(tr(acc.lang, "Diskant", "Treble")).font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.dim).textCase(.uppercase)
                     Spacer()
-                    Text("Oktave \(acc.octave >= 0 ? "+" : "")\(acc.octave)   ← →").font(.system(size: 12, weight: .medium)).foregroundStyle(Color.dim)
+                    Text("\(tr(acc.lang, "Oktave", "Octave")) \(acc.octave >= 0 ? "+" : "")\(acc.octave)   ← →").font(.system(size: 12, weight: .medium)).foregroundStyle(Color.dim)
                 }
                 if acc.mode == .chromatisch { PianoView(acc: acc) } else { ButtonRowView(acc: acc) }
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Bass + Akkord").font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.dim).textCase(.uppercase)
+                Text(tr(acc.lang, "Bass + Akkord", "Bass + chord")).font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.dim).textCase(.uppercase)
                 ChordRowView(acc: acc)
             }
 
             Text(acc.mode == .chromatisch
-                 ? "Tasten halten und den Deckel bewegen. Ohne Bewegung keine Luft, also kein Ton. Je schneller, desto lauter."
-                 : "Wechseltönig: Deckel öffnen (Zug) und schließen (Druck) spielen auf derselben Taste verschiedene Töne.")
+                 ? tr(acc.lang,
+                      "Tasten halten und den Deckel bewegen. Ohne Bewegung keine Luft, also kein Ton. Je schneller, desto lauter.",
+                      "Hold keys and move the lid. No movement means no air, so no sound. The faster you move, the louder it gets.")
+                 : tr(acc.lang,
+                      "Wechseltönig: Deckel öffnen (Zug) und schließen (Druck) spielen auf derselben Taste verschiedene Töne.",
+                      "Push-pull: opening the lid (pull) and closing it (push) play different notes on the same key."))
                 .font(.system(size: 12))
                 .foregroundStyle(Color.dim)
         }
